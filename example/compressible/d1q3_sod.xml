@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<CLBConfig version="2.0" output="output/Florian1">
+  <Units>
+    <Param value="0.0025m"               gauge="1"/>  <!-- dx          -->
+    <Param value="1.176829kg/m3"         gauge="1"/>  <!-- rho_inf     -->
+    <Param value="1121.1868711325512m/s" gauge="1"/>  <!-- dx/dt       -->
+  </Units>
+  <Geometry nx="401" ny="1">
+    <None name="Driver"><Box nx="200"/></None>
+    <None name="Driven"><Box dx="200"/></None>
+
+    <WOutflow><Box nx="1"/></WOutflow>
+    <WBuffer><Box dx="1" nx="1"/></WBuffer>
+    <EBuffer><Box dx="-2" nx="1"/></EBuffer>
+    <EOutflow><Box dx="-1"/></EOutflow>
+  </Geometry>
+
+  <Model>
+    <Param name="Viscosity" value="1e-5kg/ms"/>
+    <Param name="gamma_g"   value="1.4"/>
+    <Param name="Pr"        value="0.71"/>
+    <Param name="T_r"       value="1460K"/>
+
+    <Param name="D_dim"     value="1.0"/>
+    <Param name="sigma"     value="0.4"/>
+    <Param name="chi"       value="0.3333333"/>
+
+    <Param name="InitRho"   value="3.530487kg/m3" zone="Driver"/>
+    <Param name="InitRho"   value="1.176829kg/m3" zone="Driven"/>
+    <Param name="T_inf"     value="300K"/>
+    <Param name="InitU"     value="0m/s"/>
+  </Model>
+  <VTK name="Rho,U,Theta,Entropy"/>
+  <Solve Iterations="358">
+    <VTK Iterations="1" name="Rho,U,Theta,Entropy"/>
+  </Solve>
+</CLBConfig>
+<!--
+  Sod shock tube, d1q3comp
+    L = 1 m, 401 nodes          -> dx = L/(nx-1) = 0.0025 m
+    gas: air, R = 287 J/kg/K, gamma = 1.4, Pr = 0.71, mu = 1e-5 kg/m/s
+    T_r = 1460 K, T_inf = 300 K  -> lattice theta = T_inf/T_r
+    acoustic scaling: dx/dt = sqrt(3 R T_r) = 1121.1868711325512 m/s
+    driver  (x < 0.5 m): rho = 3 rho_inf, T = 300 K, u = 0
+    driven  (x > 0.5 m): rho =   rho_inf, T = 300 K, u = 0
+    rho_inf = p_inf/(R T_inf) = 1.176829 kg/m3
+  To change resolution, change nx, the dx gauge and the Driver box.
+-->
