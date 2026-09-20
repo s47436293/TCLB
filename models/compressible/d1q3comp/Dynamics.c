@@ -4,7 +4,7 @@
 #define CS2 (1.0/3.0)
 #define CS4 (CS2*CS2)
 
-/* ---------------- boundary-safe field reads ---------------- */
+// Boundary safe Field readign functions
 
 CudaDeviceFunction int ClampOffset(int d) {
     switch (NodeType & NODE_BOUNDARY) {
@@ -174,7 +174,6 @@ CudaDeviceFunction void SetMacro() {
     theta = theta_n;
     u     = InitU;
     s     = SFromState(InitRho, theta_n);
-    pixx  = 0.0;
 }
 
 CudaDeviceFunction void CalcInitCollision() {
@@ -184,8 +183,7 @@ CudaDeviceFunction void CalcInitCollision() {
     real_t u_n     = uAt(0);
     real_t theta_n = thetaAt(0);
 
-    //Step 2 Equillibrium
-    real_t feq[3];
+    //Step 2 Equillibrium, written to storage
     Equilibrium(rho_n, theta_n, u_n, feq);
 
     real_t dudx  = DUDX();
@@ -207,47 +205,48 @@ CudaDeviceFunction void CalcInitCollision() {
 
     real_t E = CalcE1xx(G0, Gp, Gm, sgn) + E2xx;
 
+    Exx = E;
+
     //Step 5 just for first iteration so can transition into iteration
     for (int k = 0; k < 3; k++)
         g[k] = feq[k] + Hproj[k] * ( (1.0 - omega)*a1xx + 0.5*E );
 }
 
-/* ---------------- boundary conditions ---------------- */
-
-/* Zero-gradient outflow.  gg holds the streamed populations of this
-   node; the one that arrived from outside the domain is replaced with
-   the equilibrium of the node's level-n state.
+//Boundary Conditions
+/* Zero-gradient outflow.  gg holds the streamed populations of this node;
+   the one that arrived from outside the domain is replaced with the
+   node's own equilibrium, taken straight from the stored feq.
       g[1] moves in +x, pulled from x-1: unknown at the WEST edge.
       g[2] moves in -x, pulled from x+1: unknown at the EAST edge. */
-      
-CudaDeviceFunction void WOutflow(real_t gg[3], real_t rho_, real_t theta_, real_t u_) {
-    real_t feq[3];
-    Equilibrium(rho_, theta_, u_, feq);
-    gg[1] = feq[1];
+
+CudaDeviceFunction void WOutflow(real_t gg[3], const real_t feq_[3]) {
+    gg[1] = feq_[1];
 }
 
-CudaDeviceFunction void EOutflow(real_t gg[3], real_t rho_, real_t theta_, real_t u_) {
-    real_t feq[3];
-    Equilibrium(rho_, theta_, u_, feq);
-    gg[2] = feq[2];
+CudaDeviceFunction void EOutflow(real_t gg[3], const real_t feq_[3]) {
+    gg[2] = feq_[2];
 }
 
-//Iteration Step 1 Containts Step 6,7 and 8 of algorithm 
 
-CudaDeviceFunction void CalcMacro() {
-    //level n values needed for entropy calculation
+//Iteration Stage 1 Steps 5 and 7 of algorithimn 
+
+CudaDeviceFunction void CalcRelaxation() {
+    const real_t Hproj[3] = {-1.0, 0.5, 0.5};
+
+    //level n values
     real_t rho_o   = rhoAt(0);
     real_t u_o     = uAt(0);
     real_t theta_o = thetaAt(0);
     real_t s_o     = sAt(0);
 
-    //Entropy Step 7 of algorithmn step 7
     real_t mu    = Viscosity;
     real_t p_loc = CalcPressure(rho_o, theta_o);
     real_t tau   = mu / p_loc;
     real_t tau_t = tau + 0.5;
+    real_t omega = 1.0 / tau_t;
     real_t lam   = mu * CP() / Pr;
 
+    //Entropy, step 7 of algorithm
     real_t inv_rhotheta = 1.0 / (rho_o * theta_o);
 
     real_t s_n = s_o
@@ -255,8 +254,19 @@ CudaDeviceFunction void CalcMacro() {
                + inv_rhotheta * Fourier_term(lam)
                + inv_rhotheta * PhiTerm(tau, tau_t);
 
-    //Boundary condition fixing population coming from outside domain
+    //Populations, step 5 of algorithm, Eq. (4.3.23)
+    real_t E = Exx(0,0);
+    for (int k = 0; k < 3; k++)
+        g[k] = feq[k] + Hproj[k] * ( (1.0 - omega)*a1xx(0,0) + 0.5*E );
 
+    s = s_n;
+}
+
+//Stage 2 step 6 of algorithm
+
+CudaDeviceFunction void CalcMoments() {
+    //Boundary condition fixing population coming from outside domain.
+    //feq is still at level n here - PsiEQ has not run yet this iteration.
     real_t gg[3];
     gg[0] = g[0];
     gg[1] = g[1];
@@ -264,28 +274,47 @@ CudaDeviceFunction void CalcMacro() {
 
     switch (NodeType & NODE_BOUNDARY) {
     case NODE_WOutflow:
-        WOutflow(gg, rho_o, theta_o, u_o);
+        WOutflow(gg, feq);
         break;
     case NODE_EOutflow:
-        EOutflow(gg, rho_o, theta_o, u_o);
+        EOutflow(gg, feq);
         break;
     }
-    //Step 6 of algorithm
 
     real_t rho_n = gg[0] + gg[1] + gg[2];
-    real_t u_n   = ( gg[1] - gg[2] ) / rho_n;
-    //Write newly calculated N+1 values 
-    rho   = rho_n;
-    u     = u_n;
-    s     = s_n;
-    //Step 8 algorithm
-    theta = ThetaFromS(rho_n, s_n);        /* step 8, Eq. (4.2.6) inverted */
-    pixx  = gg[1] + gg[2] - CS2*rho_n;     /* Pi_xx cached for step 11 */
+
+    rho = rho_n;
+    u   = ( gg[1] - gg[2] ) / rho_n;
 }
 
-//This stage does NOT load g - nothing here may read g[], only write it. */
-//Iteration step 2 (Contains algorithm steps 9,10,11 and 5)
-CudaDeviceFunction void CalcCollision() {
+//Stage 3 Step 8 of algorithm
+
+CudaDeviceFunction void CalcTheta() {
+    theta = ThetaFromS(rhoAt(0), sAt(0));
+}
+
+//Stage 4 Step 9 and 10 of algorithm
+
+CudaDeviceFunction void CalcEqnPsi() {
+    real_t rho_n   = rhoAt(0);
+    real_t u_n     = uAt(0);
+    real_t theta_n = thetaAt(0);
+
+    real_t E2xx = CalcE2xx(rho_n, theta_n, DUDX());
+
+    real_t Gm  = Gamma(rhoAt(-1), thetaAt(-1), uAt(-1));
+    real_t G0  = Gamma(rho_n,     theta_n,     u_n    );
+    real_t Gp  = Gamma(rhoAt( 1), thetaAt( 1), uAt( 1));
+    real_t sgn = (real_t)((u_n > 0.0) - (u_n < 0.0));
+
+    Exx = CalcE1xx(G0, Gp, Gm, sgn) + E2xx;   //step 9
+
+    Equilibrium(rho_n, theta_n, u_n, feq);    //step 10, straight into storage
+}
+
+//Stage 5 step 11 of algorithm
+
+CudaDeviceFunction void CalcA1() {
     const real_t Hproj[3] = {-1.0, 0.5, 0.5};
     const real_t Hxx[3]   = {-CS2, 1.0 - CS2, 1.0 - CS2};
 
@@ -295,40 +324,31 @@ CudaDeviceFunction void CalcCollision() {
 
     real_t dudx  = DUDX();
     real_t p_loc = CalcPressure(rho_n, theta_n);
-    real_t tau   = Viscosity / p_loc;
-    real_t tau_t = tau + 0.5;
-    real_t omega = 1.0 / tau_t;
+    real_t tau_t = Viscosity / p_loc + 0.5;
 
-    //Calculating psi (Step 9 Algorithm)
-    real_t E2xx = CalcE2xx(rho_n, theta_n, dudx);
+    real_t gg[3];
+    gg[0] = g[0];
+    gg[1] = g[1];
+    gg[2] = g[2];
 
-    real_t Gm  = Gamma(rhoAt(-1), thetaAt(-1), uAt(-1));
-    real_t G0  = Gamma(rho_n,     theta_n,     u_n    );
-    real_t Gp  = Gamma(rhoAt( 1), thetaAt( 1), uAt( 1));
-    real_t sgn = (real_t)((u_n > 0.0) - (u_n < 0.0));
+    switch (NodeType & NODE_BOUNDARY) {
+    case NODE_WOutflow:
+        WOutflow(gg, feq);
+        break;
+    case NODE_EOutflow:
+        EOutflow(gg, feq);
+        break;
+    }
 
-    real_t E = CalcE1xx(G0, Gp, Gm, sgn) + E2xx;
+    real_t E = Exx(0,0);
 
-    real_t psi[3];
+    real_t a1_pr = gg[1] + gg[2] - CS2*( gg[0] + gg[1] + gg[2] );
     for (int k = 0; k < 3; k++)
-        psi[k] = Hproj[k] * E;
-
-    //Calculate (Equillibrium Step 10)
-    real_t feq[3];
-    Equilibrium(rho_n, theta_n, u_n, feq);
-
-    //Calculate a1xx (Step 11)
-    real_t a1_pr = pixx(0,0);
-    for (int k = 0; k < 3; k++)
-        a1_pr -= Hxx[k] * ( feq[k] - 0.5*psi[k] );
+        a1_pr -= Hxx[k] * ( feq[k] - 0.5*Hproj[k]*E );
 
     real_t a1_fd = A1FD_xx(tau_t, p_loc, dudx);
 
     a1xx = sigma*a1_pr + (1.0 - sigma)*a1_fd;
-
-    //Step 5 
-    for (int k = 0; k < 3; k++)
-        g[k] = feq[k] + Hproj[k] * ( (1.0 - omega)*a1xx + 0.5*E );
 }
 
 //Outputs
