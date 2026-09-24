@@ -11,6 +11,17 @@ AddDensity(name="g[6]", dx=-1,dy=1, group="g")
 AddDensity(name="g[7]", dx=-1,dy=-1, group="g")
 AddDensity(name="g[8]", dx=1, dy=-1, group="g")
 
+#Equillibrium Storage
+AddDensity(name="feq[0]", dx=0, dy=0, group="feq")
+AddDensity(name="feq[1]", dx=0, dy=0, group="feq")
+AddDensity(name="feq[2]", dx=0, dy=0, group="feq")
+AddDensity(name="feq[3]", dx=0,dy=0, group="feq")
+AddDensity(name="feq[4]", dx=0, dy=0,group="feq")
+AddDensity(name="feq[5]", dx=0, dy=0, group="feq")
+AddDensity(name="feq[6]", dx=0,dy=0, group="feq")
+AddDensity(name="feq[7]", dx=0,dy=0, group="feq")
+AddDensity(name="feq[8]", dx=0, dy=0, group="feq")
+
 
 #Fields
 
@@ -28,26 +39,26 @@ AddField(name="Eyy",  dx=c(0,0), dy=c(0,0), group="psi", comment = "Lattice Clos
 #Stages
 
 AddStage("Collision", "CalcRelaxation",
-    load = DensityAll$group == "g",,
-    save = Fields$group %in% c("g", "entropy", "macro"))
+    load = DensityAll$group == "feq",
+    save = Fields$group %in% c("g", "entropy", "feq"))
 
 AddStage("Moments", "CalcMoments",
-    load = DensityAll$group %in% c("g"),
-    save = Fields$name %in% c("rho", "ux", "uy"),
-    can.overwrite = TRUE)
+    load = DensityAll$group %in% c("g", "feq"),
+    save = Fields$name %in% c("rho", "ux", "uy"))
+
 
 AddStage("Temperature", "CalcTheta",
     load = FALSE,
     save = Fields$name == "theta",
     can.overwrite = TRUE)
 
-
 AddStage("PsiEQ", "CalcEqnPsi",
     load = FALSE,
-    save = Fields$group %in% c("psi"))
+    save = Fields$group %in% c("psi", "feq"),
+    can.overwrite=TRUE)
 
 AddStage("A1", "CalcA1",
-    load = DensityAll$group %in% c("g"),
+    load = DensityAll$group %in% c("g", "feq"),
     save = Fields$group == "tensor")
 
 AddStage("InitMacro", "SetMacro",
@@ -55,7 +66,8 @@ AddStage("InitMacro", "SetMacro",
 
 AddStage("InitCollide", "CalcInitCollision",
     load = FALSE,
-    save = Fields$group %in% c("g", "tensor", "psi"))
+    save = Fields$group %in% c("g","feq", "tensor", "psi"))
+
 
 AddAction("Init",      c("InitMacro", "InitCollide"))
 AddAction("Iteration", c("Collision", "Moments", "Temperature", "PsiEQ", "A1"))

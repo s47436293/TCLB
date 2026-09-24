@@ -4,8 +4,7 @@
 #define CS2 (1.0/3.0)
 #define CS4 (CS2*CS2)
 
-// Boundary safe Field readign functions
-
+// Boundary safe Field reading functions
 
 CudaDeviceFunction int ClampY(int d) {
     switch (NodeType & NODE_YBOUNDARY) {
@@ -134,6 +133,57 @@ CudaDeviceFunction real_t CalcPressure(real_t rho_, real_t theta_) {
     return rho_ * CS2 * theta_;
 }
 
+
+//Relaxation Helping Functions
+CudaDeviceFunction void Equilibrium(real_t rho_, real_t theta_, real_t ux_, real_t uy_, real_t feq_[9]) {
+    const real_t w[9]  = {4./9., 1./9., 1./9., 1./9., 1./9., 1./36., 1./36., 1./36., 1./36.};
+    const real_t cx[9] = {0, 1, 0, -1,  0, 1, -1, -1,  1};
+    const real_t cy[9] = {0, 0, 1,  0, -1, 1,  1, -1, -1};
+    real_t tc  = (theta_ - 1.0) * CS2;
+    real_t axx = ux_*ux_ + tc;
+    real_t ayy = uy_*uy_ + tc;
+    real_t axy = ux_*uy_;
+    real_t axxy  = (ux_*ux_ + tc) * uy_;                              /* NEW */
+    real_t ayyx  = (uy_*uy_ + tc) * ux_;                              /* NEW */
+    real_t axxyy = ux_*ux_*uy_*uy_ + tc*(ux_*ux_ + uy_*uy_) + tc*tc;  /* NEW */
+
+    for (int k = 0; k < 9; k++) {
+        real_t Hxx = cx[k]*cx[k] - CS2;
+        real_t Hyy = cy[k]*cy[k] - CS2;
+        real_t Hxy = cx[k]*cy[k];
+        feq_[k] = w[k] * rho_ * ( 1.0
+               + ( cx[k]*ux_ + cy[k]*uy_ ) / CS2
+               + ( Hxx*axx + 2.0*Hxy*axy + Hyy*ayy ) / (2.0*CS4)
+               + ( Hxx*cy[k]*axxy + Hyy*cx[k]*ayyx ) / (2.0*CS2*CS4)   /* NEW */
+               + ( Hxx*Hyy*axxyy ) / (4.0*CS4*CS4) );                  /* NEW */
+    }
+}
+
+CudaDeviceFunction void OffEquilibrium(real_t ux_, real_t uy_, real_t theta_, real_t axx, real_t axy, real_t ayy, real_t g1_[9]) {
+    const real_t w[9]  = {4./9., 1./9., 1./9., 1./9., 1./9., 1./36., 1./36., 1./36., 1./36.};
+    const real_t cx[9] = {0, 1, 0, -1,  0, 1, -1, -1,  1};
+    const real_t cy[9] = {0, 0, 1,  0, -1, 1,  1, -1, -1};
+    real_t tc = CS2 * (theta_ - 1.0);
+
+    real_t axxy  = uy_*axx + 2.0*ux_*axy;
+    real_t ayyx  = ux_*ayy + 2.0*uy_*axy;
+    real_t axxyy = 2.0*( ux_*ayyx + uy_*axxy )
+                 + ( tc - ux_*ux_ )*ayy
+                 + ( tc - uy_*uy_ )*axx
+                 - 4.0*ux_*uy_*axy;
+
+    for (int k = 0; k < 9; k++){
+        real_t Hxx = cx[k]*cx[k] - CS2;
+        real_t Hyy = cy[k]*cy[k] - CS2;
+        real_t Hxy = cx[k]*cy[k];
+        real_t Hxxy = cx[k]*cx[k] * cy[k] - CS2 * cy[k];
+        real_t Hyyx = cy[k]*cy[k] * cx[k] - CS2 * cx[k];
+        real_t Hxxyy = pow(cx[k], 2) * pow(cy[k], 2) - CS2 * (pow(cx[k], 2)  +  pow(cy[k],2)) + CS4;
+        g1_[k] = w[k] * ((axx * Hxx + 2* axy * Hxy + ayy * Hyy)/(2 * CS4) + (axxy * Hxxy + ayyx * Hyyx) / ((2*CS4*CS2)) + axxyy*Hxxyy/(4*CS4 * CS4)) ;
+    }
+}
+
+
 //Correction Term Helper Functions
 
 CudaDeviceFunction real_t A1PR_xx(real_t gi_[9],real_t feq_[9], real_t psi_[9]){
@@ -175,9 +225,13 @@ CudaDeviceFunction real_t A1FD_xy(real_t tau_t, real_t p_loc, real_t FD1_, real_
     return -tau_t * p_loc * (FD1_ + FD2_);
 }
 
-CudaDeviceFunction real_t CalcE2ab(real_t rho_, real_t theta_, real_t dudx_, real_t dudy_) {
-    real_t p_loc = CalcPressure(rho_, theta_);
-    return p_loc * ( (D_dim + 2.0)/D_dim - gamma_g ) * (dudx_ + dudy_);
+
+
+
+//Calculating Psi Helper Functions
+
+CudaDeviceFunction real_t Gamma(real_t rho_, real_t theta_, real_t u_) {
+    return rho_ * u_ * (1.0 - theta_ - u_*u_);
 }
 
 CudaDeviceFunction real_t CalcE1ab(real_t G0, real_t Gp, real_t Gm, real_t sgn) {
@@ -186,60 +240,25 @@ CudaDeviceFunction real_t CalcE1ab(real_t G0, real_t Gp, real_t Gm, real_t sgn) 
     return 0.5*(1.0 + sgn)*dGb + 0.5*(1.0 - sgn)*dGf;
 }
 
-CudaDeviceFunction real_t Gamma(real_t rho_, real_t theta_, real_t u_) {
-    return rho_ * u_ * (1.0 - theta_ - u_*u_);
+CudaDeviceFunction real_t CalcE2ab(real_t rho_, real_t theta_, real_t dudx_, real_t dudy_) {
+    real_t p_loc = CalcPressure(rho_, theta_);
+    return p_loc * ( (D_dim + 2.0)/D_dim - gamma_g ) * (dudx_ + dudy_);
 }
 
 
-/* D2Q9 equilibrium, Eq. (4.2.7): second-order Hermite expansion.
-   velocity order: 0 (0,0) 1 (1,0) 2 (0,1) 3 (-1,0) 4 (0,-1)
-                   5 (1,1) 6 (-1,1) 7 (-1,-1) 8 (1,-1)               */
-
-#if 0 
-
-CudaDeviceFunction void Equilibrium(real_t rho_, real_t theta_, real_t ux_, real_t uy_, real_t feq_[9]) {
+CudaDeviceFunction void CalcPsi(real_t psi_[9], real_t Exx, real_t Eyy){
     const real_t w[9]  = {4./9., 1./9., 1./9., 1./9., 1./9., 1./36., 1./36., 1./36., 1./36.};
     const real_t cx[9] = {0, 1, 0, -1,  0, 1, -1, -1,  1};
     const real_t cy[9] = {0, 0, 1,  0, -1, 1,  1, -1, -1};
-
-    real_t tc  = (theta_ - 1.0) * CS2;
-    real_t axx = ux_*ux_ + tc;           /* a2 / rho */
-    real_t ayy = uy_*uy_ + tc;
-    real_t axy = ux_*uy_;
-
-    for (int k = 0; k < 9; k++) {
+    for (int k = 0; k < 9; k++){
         real_t Hxx = cx[k]*cx[k] - CS2;
         real_t Hyy = cy[k]*cy[k] - CS2;
-        real_t Hxy = cx[k]*cy[k];
-        feq_[k] = w[k] * rho_ * ( 1.0
-               + ( cx[k]*ux_ + cy[k]*uy_ ) / CS2
-               + ( Hxx*axx + 2.0*Hxy*axy + Hyy*ayy ) / (2.0*CS4) );
-    }} 
-#endif
-
-CudaDeviceFunction void Equilibrium(real_t rho_, real_t theta_, real_t ux_, real_t uy_, real_t feq_[9]) {
-    const real_t w[9]  = {4./9., 1./9., 1./9., 1./9., 1./9., 1./36., 1./36., 1./36., 1./36.};
-    const real_t cx[9] = {0, 1, 0, -1,  0, 1, -1, -1,  1};
-    const real_t cy[9] = {0, 0, 1,  0, -1, 1,  1, -1, -1};
-    real_t tc  = (theta_ - 1.0) * CS2;
-    real_t axx = ux_*ux_ + tc;
-    real_t ayy = uy_*uy_ + tc;
-    real_t axy = ux_*uy_;
-    real_t axxy  = (ux_*ux_ + tc) * uy_;                              /* NEW */
-    real_t ayyx  = (uy_*uy_ + tc) * ux_;                              /* NEW */
-    real_t axxyy = ux_*ux_*uy_*uy_ + tc*(ux_*ux_ + uy_*uy_) + tc*tc;  /* NEW */
-
-    for (int k = 0; k < 9; k++) {
-        real_t Hxx = cx[k]*cx[k] - CS2;
-        real_t Hyy = cy[k]*cy[k] - CS2;
-        real_t Hxy = cx[k]*cy[k];
-        feq_[k] = w[k] * rho_ * ( 1.0
-               + ( cx[k]*ux_ + cy[k]*uy_ ) / CS2
-               + ( Hxx*axx + 2.0*Hxy*axy + Hyy*ayy ) / (2.0*CS4)
-               + ( Hxx*cy[k]*axxy + Hyy*cx[k]*ayyx ) / (2.0*CS2*CS4)   /* NEW */
-               + ( Hxx*Hyy*axxyy ) / (4.0*CS4*CS4) );                  /* NEW */
+        psi_[k] = w[k]*(Hxx * Exx + Hyy * Eyy)/ (2 * CS4);
     }
 }
+
+
+
 
 // Common velocity gradient, used by A1FD, E2 and Phi. 
 CudaDeviceFunction real_t DUXDX() { return 0.5 * ( uxAt(1)  - uxAt(-1)  ); }
@@ -249,7 +268,6 @@ CudaDeviceFunction real_t DUYDY() { return 0.5 * ( uyAt(1)  - uyAt(-1)  ); }
 
 
 //Entropy Equation Update Helper Functions
-
 CudaDeviceFunction real_t VanAlbada(real_t num, real_t den){
     if (fabs(den) < 1e-30) return 0.0;
     real_t r = num/den;
@@ -304,44 +322,10 @@ CudaDeviceFunction real_t PhiTerm(real_t tau_, real_t tau_t_){
 }
 
 
-/* Off-equilibrium populations g^(1), recursive regularisation.
-   Second-order moments come from the sigma blend (stored fields);
-   the third- and fourth-order ones are rebuilt from them here.     */
-CudaDeviceFunction void OffEquilibrium(real_t ux_, real_t uy_, real_t theta_, real_t axx, real_t axy, real_t ayy, real_t g1_[9]) {
-    const real_t w[9]  = {4./9., 1./9., 1./9., 1./9., 1./9., 1./36., 1./36., 1./36., 1./36.};
-    const real_t cx[9] = {0, 1, 0, -1,  0, 1, -1, -1,  1};
-    const real_t cy[9] = {0, 0, 1,  0, -1, 1,  1, -1, -1};
-    real_t tc = CS2 * (theta_ - 1.0);
 
-    real_t axxy  = uy_*axx + 2.0*ux_*axy;
-    real_t ayyx  = ux_*ayy + 2.0*uy_*axy;
-    real_t axxyy = 2.0*( ux_*ayyx + uy_*axxy )
-                 + ( tc - ux_*ux_ )*ayy
-                 + ( tc - uy_*uy_ )*axx
-                 - 4.0*ux_*uy_*axy;
 
-    for (int k = 0; k < 9; k++){
-        real_t Hxx = cx[k]*cx[k] - CS2;
-        real_t Hyy = cy[k]*cy[k] - CS2;
-        real_t Hxy = cx[k]*cy[k];
-        real_t Hxxy = cx[k]*cx[k] * cy[k] - CS2 * cy[k];
-        real_t Hyyx = cy[k]*cy[k] * cx[k] - CS2 * cx[k];
-        real_t Hxxyy = pow(cx[k], 2) * pow(cy[k], 2) - CS2 * (pow(cx[k], 2)  +  pow(cy[k],2)) + CS4;
-        g1_[k] = w[k] * ((axx * Hxx + 2* axy * Hxy + ayy * Hyy)/(2 * CS4) + (axxy * Hxxy + ayyx * Hyyx) / ((2*CS4*CS2)) + axxyy*Hxxyy/(4*CS4 * CS4)) ;
-    }
-}
-CudaDeviceFunction void CalcPsi(real_t psi_[9], real_t Exx, real_t Eyy){
-    const real_t w[9]  = {4./9., 1./9., 1./9., 1./9., 1./9., 1./36., 1./36., 1./36., 1./36.};
-    const real_t cx[9] = {0, 1, 0, -1,  0, 1, -1, -1,  1};
-    const real_t cy[9] = {0, 0, 1,  0, -1, 1,  1, -1, -1};
-    for (int k = 0; k < 9; k++){
-        real_t Hxx = cx[k]*cx[k] - CS2;
-        real_t Hyy = cy[k]*cy[k] - CS2;
-        psi_[k] = w[k]*(Hxx * Exx + Hyy * Eyy)/ (2 * CS4);
-    }
-}
+
 //Initilisation Step
-
 
 //Initial State from the XML inputs (Algorithm Step 1)
 
@@ -361,9 +345,7 @@ CudaDeviceFunction void CalcInitCollision() {
     real_t uy_n = uy(0,0);
     real_t theta_n = theta(0,0);
 
-    //Step 2 Calculate Equillibrium Locally
-
-    real_t feq[9];
+    //Step 2 Calculate Equillibrium 
     Equilibrium(rho_n, theta_n, ux_n, uy_n, feq);
 
 
@@ -484,7 +466,6 @@ CudaDeviceFunction void CalcRelaxation() {
                + inv_rhotheta * Fourier_term(lam)
                + inv_rhotheta * PhiTerm(tau, tau_t);
     //Calculate Equillibrium Locally
-    real_t feq[9];
     Equilibrium(rho_o, theta_o, ux_o, uy_o, feq);
 
     //Populations, step 5 of algorithm, Eq. (4.3.23)
@@ -501,10 +482,6 @@ CudaDeviceFunction void CalcRelaxation() {
         g[k] = feq[k] + (1.0 - omega)* g1[k] + 0.5 * psi[k];
 
     s = s_n;
-    rho   = rho_o;
-    ux    = ux_o;
-    uy    = uy_o;
-    theta = theta_o;
 }
 
 //Stage 2 step 6 of algorithm
@@ -513,13 +490,7 @@ CudaDeviceFunction void CalcMoments() {
     //Boundary condition fixing population coming from outside domain.
     //feq is still at level n here - PsiEQ has not run yet this iteration.
     
-    //Calc Equillibrium Locally
-    real_t feq[9];
-    real_t rho_o = rho(0,0);
-    real_t ux_o = ux(0,0);
-    real_t uy_o = uy(0,0);
-    real_t theta_o = theta(0,0);
-    Equilibrium(rho_o, theta_o, ux_o, uy_o, feq);
+
 
     switch (NodeType & NODE_XBOUNDARY) {
     case NODE_WOutflow: WOutflow(g, feq); break;
@@ -574,8 +545,8 @@ CudaDeviceFunction void CalcEqnPsi() {
     Exx = E1xx + E2ab;
     Eyy = E1yy + E2ab;
 
-
-
+    //Calculate Equillibrium
+    Equilibrium(rho_n, theta_n, ux_n, uy_n, feq);
 }
 
 //Stage 5 step 11 of algorithm
@@ -597,10 +568,6 @@ CudaDeviceFunction void CalcA1() {
 
     real_t p_loc = CalcPressure(rho_n, theta_n);
     real_t tau_t = Viscosity / p_loc + 0.5;
-
-    //Calc Equillibrium Locally
-    real_t feq[9];
-    Equilibrium(rho_n, theta_n, ux_n, uy_n, feq);
 
     //Calculate Psi
     real_t psi[9];
