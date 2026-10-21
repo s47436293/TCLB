@@ -89,6 +89,8 @@ AddSetting(name="InitRho",   default=1.0, zonal=T, unit="kg/m3", comment="initia
 AddSetting(name="T_inf", default=1.0, zonal=T, unit="K",     comment="initial temperature, theta = T_inf/T_r")
 AddSetting(name="InitUx", default=0.0, zonal=T, unit="m/s", comment="initial velocity, x")
 AddSetting(name="InitUy", default=0.0, zonal=T, unit="m/s", comment="initial velocity, y")
+AddSetting(name="KHI", default = 0.0, comment = "Kelvin-Helmholtz simulation toggle, KHI=1.0 = KHI instability simulation")
+AddSetting(name="BoxH", default=1.0, unit="m",comment="domain height; KHI profile defined on y/BoxH in [0,1]")
 
 
 #Boundary Condition Nodes
@@ -104,8 +106,9 @@ AddNodeType(name="NBuffer",  group="YBOUNDARY")
 AddNodeType(name="Wall",     group="YBOUNDARY")
 #Outputs
 
-AddQuantity(name="Rho")
-AddQuantity(name="U", vector=TRUE)
+AddQuantity(name="Rho", unit = "kg/m3")
+AddQuantity(name="U",unit = "m/s", vector=TRUE)
 AddQuantity(name="Theta")
+AddQuantity(name = "Temperature", unit = "K")
 AddQuantity(name="Entropy")
-AddQuantity(name="Pressure")
+AddQuantity(name="Pressure", unit = "Pa")

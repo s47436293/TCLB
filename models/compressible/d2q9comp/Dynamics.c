@@ -322,7 +322,19 @@ CudaDeviceFunction real_t PhiTerm(real_t tau_, real_t tau_t_){
 }
 
 
+//KHI Helper Functions
 
+
+// --- McNally et al. 2012 (ApJS 201, 18), Eqs. (4)-(8) ----------------
+// v1 = outer (light) value, v2 = inner (heavy) value.
+// At the interface both branches give (v1+v2)/2, so the profile is C0.
+CudaDeviceFunction real_t McNallyRamp(real_t y, real_t v1, real_t v2, real_t L) {
+    real_t yi = (y < 0.5) ? 0.25 : 0.75;        // nearest interface
+    real_t E  = exp(-fabs(y - yi) / L);         // 1 at interface, ->0 away
+    real_t vm = 0.5 * (v1 - v2);
+    if (y >= 0.25 && y < 0.75) return v2 + vm * E;   // inner layer
+    else                       return v1 - vm * E;   // outer layer
+}
 
 
 //Initilisation Step
@@ -330,13 +342,38 @@ CudaDeviceFunction real_t PhiTerm(real_t tau_, real_t tau_t_){
 //Initial State from the XML inputs (Algorithm Step 1)
 
 CudaDeviceFunction void SetMacro() {
-    real_t theta_n = T_inf / T_r;
-    rho   = InitRho;
-    theta = theta_n;
-    ux    = InitUx;
-    uy    = InitUy;
-    s     = SFromState(InitRho, theta_n);
+
+if (KHI > 0.5) {
+    const real_t L  = 0.025;   // ramp thickness, in box lengths
+    const real_t A  = 0.02;    // = 0.01/|U|, i.e. McNally's absolute 0.01
+    const real_t PI = 3.14159265358979;
+
+    real_t y = (Y + 0.5) / BoxH;
+    real_t x = (X + 0.5) / BoxH;   // McNally box is square, so one setting covers both
+
+    real_t rho_n = McNallyRamp(y, InitRho,  2.0*InitRho, L);
+    real_t ux_n  = McNallyRamp(y, InitUx,  -InitUx,      L);
+    real_t uy_n  = A * InitUx * sin(4.0*PI*x);
+
+    // uniform pressure: p = rho1*CS2*theta1  =>  theta = rho1*theta1/rho
+    real_t theta1  = T_inf / T_r;
+    real_t theta_n = InitRho * theta1 / rho_n;
+
+    rho = rho_n;  ux = ux_n;  uy = uy_n;  theta = theta_n;
+    s   = SFromState(rho_n, theta_n);
+
+    } else{
+
+        real_t theta_n = T_inf / T_r;
+        rho   = InitRho;
+        theta = theta_n;
+        ux    = InitUx;
+        uy    = InitUy;
+        s     = SFromState(InitRho, theta_n);
+    }
 }
+    
+
 
 CudaDeviceFunction void CalcInitCollision() {
 
@@ -609,6 +646,7 @@ CudaDeviceFunction real_t getRho()      { return rho(0,0); }
 CudaDeviceFunction real_t getTheta()    { return theta(0,0); }
 CudaDeviceFunction real_t getEntropy()  { return s(0,0); }
 CudaDeviceFunction real_t getPressure() { return CalcPressure(rho(0,0), theta(0,0)); }
+CudaDeviceFunction real_t getTemperature(){return theta(0,0) * T_r;}
 
 CudaDeviceFunction vector_t getU() {
     vector_t ret;
